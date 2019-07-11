@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+# Calculate siamese words (after Jérémie Wenger)
+# Reuben Thomas 10th July 2019–11th July 2019
+
+import sys
+import argparse
+from array import array
+import regex # For named character classes/Unicode properties
+import csv
+
+
+# Command-line arguments
+parser = argparse.ArgumentParser(description='Find Siamese words.',
+                                 epilog='''
+If a DICTIONARY is omitted, /usr/share/dict/words is used.
+''')
+
+parser.add_argument('-V', '--version', action='version',
+                    version='%(prog)s 0.1 (10 Jul 2019) by Reuben Thomas <rrt@sc3d.org>')
+parser.add_argument('up_dictionary', metavar='DICTIONARY', nargs='?', default='/usr/share/dict/words')
+parser.add_argument('down_dictionary', metavar='DICTIONARY', nargs='?', default='/usr/share/dict/words')
+parser.add_argument('--min-overlap', metavar='N', type=int, default=3)
+parser.add_argument('--up-word-regex', metavar='REGEX', default=r'\p{lowercase}{4,}')
+parser.add_argument('--down-word-regex', metavar='REGEX', default=r'\p{lowercase}{4,}')
+parser.add_argument('--match-regex', metavar='REGEX', default=r'(\s*\S\s*){2,}')
+parser.add_argument('--up-nonmatch-regex', metavar='REGEX', default=r'(\s*\S\s*){2,}')
+parser.add_argument('--down-nonmatch-regex', metavar='REGEX', default=r'(\s*\S\s*){2,}')
+
+args = parser.parse_args()
+
+
+# Get wordlists
+up_raw_words = [line.strip() for line in open(args.up_dictionary).readlines()]
+down_raw_words = [line.strip() for line in open(args.down_dictionary).readlines()]
+print("Total words {}, {}".format(len(up_raw_words), len(down_raw_words)), file=sys.stderr)
+
+
+# Find qualifying words
+up_word_regex = regex.compile(args.up_word_regex)
+up_words = [
+    word
+    for word in up_raw_words
+    if regex.fullmatch(up_word_regex, word)
+]
+down_word_regex = regex.compile(args.down_word_regex)
+down_words = [
+    word
+    for word in down_raw_words
+    if regex.fullmatch(down_word_regex, word)
+]
+print("Filtered words {}, {}".format(len(up_words), len(down_words)), file=sys.stderr)
+
+# Find siamese pairs
+def overlap(a, b, n):
+    tot_len = 2 * len(a) + len(b) - 2
+
+    # Pad words to matching position
+    a_pad = array('u', ' ' * (n - 1 + len(a)) + a + ' ' * (tot_len - (n - 1 + len(a)) - len(a)))
+    b_pad = array('u', (' ' * (len(a) - 1)) + b + ' ' * (tot_len - (len(a) - 1) - len(b)))
+
+    # Compute overlap & rest
+    match = array('u', ' ' * tot_len)
+    rest_a = array('u', ' ' * tot_len)
+    rest_b = array('u', ' ' * tot_len)
+    start = max(len(a) - 1, n + len(a) - 1)
+    end = min(len(a_pad), len(b_pad))
+    for i in range(start):
+        rest_a[i] = a_pad[i]
+        rest_b[i] = b_pad[i]
+    for i in range(end, tot_len):
+        rest_a[i] = a_pad[i]
+        rest_b[i] = b_pad[i]
+    for i in range(start, end):
+        if a_pad[i] == b_pad[i]:
+            match[i] = a_pad[i]
+        else:
+            rest_a[i] = a_pad[i]
+            rest_b[i] = b_pad[i]
+
+    return match.tounicode(), rest_a.tounicode(), rest_b.tounicode()
+
+min_overlap = args.min_overlap
+match_regex = regex.compile(args.match_regex)
+up_nonmatch_regex = regex.compile(args.up_nonmatch_regex)
+down_nonmatch_regex = regex.compile(args.down_nonmatch_regex)
+total = len(up_words) * len(down_words)
+pairs = 0
+n = 0
+old_percent = -1
+writer = csv.writer(sys.stdout)
+for a in up_words:
+    for b in down_words:
+        for i in range(-len(a) + min_overlap, len(b) + 1 - min_overlap):
+            match, rest_a, rest_b = overlap(a, b, i)
+            if (match_regex.fullmatch(match) and
+                up_nonmatch_regex.fullmatch(rest_a) and
+                down_nonmatch_regex.fullmatch(rest_b)
+            ):
+                pairs += 1
+                writer.writerow([i, a, b])
+
+            n += 1
+            percent = (n / total * 100) // 100
+            if percent > old_percent:
+                print("\n{}%".format(int(percent)), end='', flush=True)
+                old_percent = percent
+            if n % 100000 == 0:
+                print(' {:.4f}'.format(n / total * 100), end='', flush=True)
+print("Pairs {}".format(pairs))
